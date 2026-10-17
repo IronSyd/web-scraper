@@ -1,0 +1,11 @@
+name: web-scraper
+services:
+  mongo:
+    image: mongodb/mongodb-community-server@sha256:afae53f3a42f6c202b4b2d0856e544cb723bae3f552b45da8d0b0655f58cac96
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - web-scraper-mongo:/data/db
+    restart: "no"
+volumes:
+  web-scraper-mongo:

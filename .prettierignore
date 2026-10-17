@@ -1,0 +1,15 @@
+node_modules
+.venv
+.cache
+.impeccable/questions
+.impeccable/review
+.impeccable/mocks
+dist
+artifacts
+docs
+AGENTS.md
+PRODUCT.md
+pnpm-lock.yaml
+requirements.lock
+collectors
+.env*

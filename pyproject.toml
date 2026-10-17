@@ -1,0 +1,32 @@
+[project]
+name = "web-scraper-collectors"
+version = "0.1.0"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "beautifulsoup4==4.15.0",
+  "playwright==1.64.0",
+  "python-dotenv==1.2.4",
+  "requests==2.34.2",
+]
+
+[project.optional-dependencies]
+verification = [
+  "pdfplumber==0.11.10",
+  "pypdf==6.21.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["collectors/python/tests"]
+pythonpath = ["collectors/python"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+mypy_path = "collectors/python"

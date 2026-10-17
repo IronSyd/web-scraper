@@ -1,0 +1,8 @@
+flowchart LR
+    accTitle: Web Scraper collection flow
+    accDescr: An explicit collection request dispatches a source adapter, validates records, saves a MongoDB snapshot and makes saved results and history available after reload.
+    Request[Explicit collection request] --> Collect[Source adapter]
+    Collect --> Validate[Parse and validate]
+    Validate --> Save[(MongoDB snapshot)]
+    Save --> View[Saved results and history]
+    View --> Reload[Reopen after reload]

@@ -20,26 +20,11 @@ Credentials remain in the server/CLI environment. The frontend receives validate
 
 Collection and browsing use different paths. Only an explicit, enabled POST can dispatch a collector; GET requests read stored data or runtime status.
 
-```mermaid
-flowchart TD
-    UI[React workspace] -->|Explicit POST| API[Express validation]
-    API --> Run[Run service]
-    Run -->|Save running attempt| DB[(MongoDB)]
-    Run -->|Dispatch after admission| Adapter[Bounded source adapter]
-    Adapter --> Amazon[Amazon: ZenRows Fetch and Cheerio]
-    Adapter --> Indeed[Indeed: ZenRows Fetch and Python]
-    Adapter --> Booking[Booking: ZenRows Browser and Python]
-    Adapter --> Tiobe[TIOBE: public HTTP and Cheerio]
-    Amazon --> Result[Validate normalized records or classify failure]
-    Indeed --> Result
-    Booking --> Result
-    Tiobe --> Result
-    Result -->|Persist terminal outcome| DB
-    UI -->|Saved-data GET| Read[Run repository reads]
-    Read --> DB
-    DB -->|Saved records and metadata| Read
-    Read -->|Validated response| UI
-```
+![Architecture flow separating explicit collection through Express, the run service and four source adapters from saved-data reads backed by MongoDB](images/architecture.png)
+
+[Open the scalable architecture diagram](images/architecture.svg) · [Edit the Mermaid source](diagrams/architecture.mmd)
+
+This image is generated locally from the editable source. Use the [diagram generation guide](diagrams/README.md) to regenerate and check both formats. Open the scalable version to inspect labels on a narrow screen.
 
 The terminal record preserves either validated snapshot data or a safe failure outcome. The read path never falls back to collection, and a failed new attempt does not replace an earlier successful snapshot. Health/activity GETs are separate in-memory runtime reads and are not shown as database reads in this diagram.
 

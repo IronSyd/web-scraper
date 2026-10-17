@@ -36,14 +36,11 @@ _The same workspace adapts to a narrow screen with drawer navigation._
 
 ## How it works
 
-```mermaid
-flowchart LR
-    Request[Explicit collection request] --> Collect[Source adapter]
-    Collect --> Validate[Parse and validate]
-    Validate --> Save[(MongoDB snapshot)]
-    Save --> View[Saved results and history]
-    View --> Reload[Reopen after reload]
-```
+![Collection flow from an explicit request through source collection, validation and a MongoDB snapshot to saved results and reload](docs/images/collection-flow.png)
+
+[Open the scalable collection diagram](docs/images/collection-flow.svg) · [Edit the Mermaid source](docs/diagrams/collection-flow.mmd)
+
+The diagram is rendered locally and stored as an ordinary image. See [diagram generation](docs/diagrams/README.md) for the pinned renderer and verification commands.
 
 Fresh collection must be deliberately enabled. Opening or refreshing a view reads saved data instead of starting this pipeline. See [architecture](docs/architecture.md) for the separate read path, runtime ownership and failure handling.
 

@@ -1,0 +1,20 @@
+flowchart TD
+    accTitle: Web Scraper collection and saved-data architecture
+    accDescr: An explicit POST passes Express validation and a run service before dispatching one of four bounded source adapters. Validated records or a failure outcome are persisted in MongoDB. Saved-data GET requests read the repository and return records without dispatching a collector.
+    UI[React workspace] -->|Explicit POST| API[Express validation]
+    API --> Run[Run service]
+    Run -->|Save running attempt| DB[(MongoDB)]
+    Run -->|Dispatch after admission| Adapter[Bounded source adapter]
+    Adapter --> Amazon[Amazon: ZenRows Fetch and Cheerio]
+    Adapter --> Indeed[Indeed: ZenRows Fetch and Python]
+    Adapter --> Booking[Booking: ZenRows Browser and Python]
+    Adapter --> Tiobe[TIOBE: public HTTP and Cheerio]
+    Amazon --> Result[Validate normalized records or classify failure]
+    Indeed --> Result
+    Booking --> Result
+    Tiobe --> Result
+    Result -->|Persist terminal outcome| DB
+    UI -->|Saved-data GET| Read[Run repository reads]
+    Read --> DB
+    DB -->|Saved records and metadata| Read
+    Read -->|Validated response| UI

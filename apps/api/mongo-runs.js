@@ -18,9 +18,43 @@ const timestamp = (value) =>
   value instanceof Date && Number.isFinite(value.getTime())
     ? value.toISOString()
     : null;
+/** @param {unknown} value */
+function archiveTimestamp(value) {
+  if (value === undefined || value === null) return null;
+  const stamp = timestamp(value);
+  if (stamp === null) throw databaseUnavailable();
+  return stamp;
+}
+/** @param {Record<string,unknown>} entry @param {'id'|'key'} identity */
+function deletedEntry(entry, identity) {
+  if (!Object.hasOwn(entry, "deletedAt")) return false;
+  if (
+    timestamp(entry["deletedAt"]) === null ||
+    Object.keys(entry).some(
+      (key) => !["_id", identity, "deletedAt"].includes(key),
+    ) ||
+    typeof entry[identity] !== "string"
+  )
+    throw databaseUnavailable();
+  return true;
+}
+/** @param {unknown} value */
+function mutationDate(value) {
+  if (value === null) return null;
+  if (typeof value !== "string" || timestamp(new Date(value)) !== value)
+    throw databaseUnavailable();
+  return new Date(value);
+}
 /** @param {Record<string,unknown>} entry */
 function storedRun(entry) {
-  const run = validateRun(entry["value"]);
+  if (deletedEntry(entry, "id")) throw databaseUnavailable();
+  const value = entry["value"];
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw databaseUnavailable();
+  const run = validateRun({
+    ...value,
+    archivedAt: archiveTimestamp(entry["archivedAt"]),
+  });
   if (
     entry["id"] !== run.id ||
     entry["source"] !== run.source ||
@@ -31,12 +65,32 @@ function storedRun(entry) {
 }
 /** @param {Record<string,unknown>} entry @returns {import('./types.js').Run} */
 function legacyRun(entry) {
+  if (deletedEntry(entry, "key")) throw databaseUnavailable();
   const key = entry["key"];
   if (typeof key !== "string") throw databaseUnavailable();
   const source =
     key === "tiobe" ? "tiobe" : key.startsWith("amazon:") ? "amazon" : null;
   if (source === null) throw databaseUnavailable();
   const stamp = timestamp(entry["createdAt"]);
+  const states = entry["management"];
+  let archivedAt = null;
+  if (states !== undefined) {
+    if (!Array.isArray(states) || states.length > 1)
+      throw databaseUnavailable();
+    const state = states[0];
+    if (state !== undefined) {
+      if (
+        !state ||
+        typeof state !== "object" ||
+        Array.isArray(state) ||
+        Object.keys(state).length !== 2 ||
+        state["_id"] !== key ||
+        !Object.hasOwn(state, "archivedAt")
+      )
+        throw databaseUnavailable();
+      archivedAt = archiveTimestamp(state["archivedAt"]);
+    }
+  }
   return validateRun({
     id: legacyId(key),
     source,
@@ -54,6 +108,7 @@ function legacyRun(entry) {
     resultCount: Array.isArray(entry["data"]) ? entry["data"].length : -1,
     data: entry["data"],
     error: null,
+    archivedAt,
   });
 }
 /** @param {number} pid */
@@ -110,6 +165,7 @@ export async function connectMongoRuns(
       source: { type: String, required: true },
       createdAt: { type: Date, required: true },
       value: { type: mongoose.Schema.Types.Mixed, required: true },
+      archivedAt: { type: Date, default: null },
     },
     { strict: "throw", collection: "collectionruns", minimize: false },
   );
@@ -118,6 +174,10 @@ export async function connectMongoRuns(
   const model = connection.model("CollectionRun", schema);
   const owners = connection.collection("collectionruntimeowners"),
     legacy = connection.collection("collectionbatches");
+  const legacyStates =
+    /** @type {import('mongoose').Collection<{_id:string,archivedAt:Date|null}>} */ (
+      connection.collection("collectionlegacyrunstates")
+    );
   let owned = false,
     closed = false;
   try {
@@ -181,6 +241,129 @@ export async function connectMongoRuns(
     await connection.close();
     throw error;
   }
+  /** @param {'id'|'key'} identity @returns {import('mongoose').PipelineStage.Match} */
+  function liveDocuments(identity) {
+    // Corrupt tombstones remain visible to the validating mapper and fail closed.
+    return {
+      $match: {
+        $or: [
+          { deletedAt: { $exists: false } },
+          {
+            $expr: {
+              $not: [
+                {
+                  $and: [
+                    { $eq: [{ $type: "$deletedAt" }, "date"] },
+                    {
+                      $setEquals: [
+                        {
+                          $map: {
+                            input: { $objectToArray: "$$ROOT" },
+                            as: "field",
+                            in: "$$field.k",
+                          },
+                        },
+                        ["_id", identity, "deletedAt"],
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+  }
+  /** @returns {import('mongoose').PipelineStage[]} */
+  function legacyManagement() {
+    return [
+      {
+        $lookup: {
+          from: "collectionlegacyrunstates",
+          localField: "key",
+          foreignField: "_id",
+          as: "management",
+        },
+      },
+      {
+        $addFields: {
+          managementValid: {
+            $cond: [
+              { $eq: [{ $size: "$management" }, 0] },
+              true,
+              {
+                $cond: [
+                  { $eq: [{ $size: "$management" }, 1] },
+                  {
+                    $and: [
+                      {
+                        $setEquals: [
+                          {
+                            $map: {
+                              input: {
+                                $objectToArray: {
+                                  $arrayElemAt: ["$management", 0],
+                                },
+                              },
+                              as: "field",
+                              in: "$$field.k",
+                            },
+                          },
+                          ["_id", "archivedAt"],
+                        ],
+                      },
+                      {
+                        $in: [
+                          {
+                            $type: {
+                              $arrayElemAt: ["$management.archivedAt", 0],
+                            },
+                          },
+                          ["null", "date"],
+                        ],
+                      },
+                    ],
+                  },
+                  false,
+                ],
+              },
+            ],
+          },
+          archivedAt: { $arrayElemAt: ["$management.archivedAt", 0] },
+        },
+      },
+    ];
+  }
+  /** @param {'active'|'archived'} visibility @param {boolean} [legacyCollection] @returns {import('mongoose').PipelineStage.Match} */
+  function visibleDocuments(visibility, legacyCollection = false) {
+    return {
+      $match: {
+        $expr: {
+          $or: [
+            ...(legacyCollection ? [{ $eq: ["$managementValid", false] }] : []),
+            {
+              $not: [
+                {
+                  $in: [{ $type: "$archivedAt" }, ["missing", "null", "date"]],
+                },
+              ],
+            },
+            visibility === "archived"
+              ? { $eq: [{ $type: "$archivedAt" }, "date"] }
+              : { $in: [{ $type: "$archivedAt" }, ["missing", "null"]] },
+          ],
+        },
+      },
+    };
+  }
+  /** @param {string} key */
+  async function getLegacy(key) {
+    const entry = await legacy.findOne({ key }, { maxTimeMS: 5000 });
+    if (!entry || deletedEntry(entry, "key")) return null;
+    const state = await legacyStates.findOne({ _id: key }, { maxTimeMS: 5000 });
+    return legacyRun({ ...entry, management: state ? [state] : [] });
+  }
   /** @param {import('./types.js').HistoryOptions} options @param {boolean} legacyCollection */
   async function historyPart(options, legacyCollection) {
     /** @type {import('mongoose').PipelineStage[]} */ const pipeline = [];
@@ -195,6 +378,9 @@ export async function connectMongoRuns(
               : { $or: [{ key: "tiobe" }, { key: /^amazon:/u }] };
       pipeline.push(
         { $match: match },
+        liveDocuments("key"),
+        ...legacyManagement(),
+        visibleDocuments(options.visibility ?? "active", true),
         {
           $addFields: {
             sortTime: {
@@ -211,6 +397,8 @@ export async function connectMongoRuns(
     } else
       pipeline.push(
         { $match: options.source ? { source: options.source } : {} },
+        liveDocuments("id"),
+        visibleDocuments(options.visibility ?? "active"),
         { $addFields: { sortTime: { $toLong: "$createdAt" }, sortTie: "$id" } },
       );
     if (options.cursor)
@@ -240,14 +428,102 @@ export async function connectMongoRuns(
   const repository = {
     async get(id) {
       if (id.startsWith("legacy-")) {
-        const entry = await legacy.findOne(
-          { key: legacyKey(id) },
-          { maxTimeMS: 5000 },
-        );
-        return entry ? legacyRun(entry) : null;
+        return getLegacy(legacyKey(id));
       }
       const entry = await model.findOne({ id }).maxTimeMS(5000).lean().exec();
-      return entry ? storedRun(entry) : null;
+      return entry && !deletedEntry(entry, "id") ? storedRun(entry) : null;
+    },
+    async isDeleted(id) {
+      const entry = id.startsWith("legacy-")
+        ? await legacy.findOne({ key: legacyKey(id) }, { maxTimeMS: 5000 })
+        : await model.findOne({ id }).maxTimeMS(5000).lean().exec();
+      return entry
+        ? deletedEntry(entry, id.startsWith("legacy-") ? "key" : "id")
+        : false;
+    },
+    async archive(id, archivedAt) {
+      const stamp = mutationDate(archivedAt);
+      const current = await repository.get(id);
+      if (!current)
+        return (await repository.isDeleted(id)) ? "deleted" : "missing";
+      if (current.status === "running") return "running";
+      if (id.startsWith("legacy-")) {
+        const key = legacyKey(id);
+        // Only this side record changes: the original cache bytes stay intact.
+        const state = await legacyStates.findOne(
+          { _id: key },
+          { maxTimeMS: 5000 },
+        );
+        if (
+          state &&
+          (Object.keys(state).length !== 2 ||
+            !Object.hasOwn(state, "archivedAt"))
+        )
+          throw databaseUnavailable();
+        if (state) archiveTimestamp(state["archivedAt"]);
+        const existing = state ? archiveTimestamp(state["archivedAt"]) : null;
+        if (archivedAt === null || existing === null) {
+          try {
+            await legacyStates.updateOne(
+              { _id: key, ...(stamp === null ? {} : { archivedAt: null }) },
+              { $set: { archivedAt: stamp } },
+              { upsert: true, maxTimeMS: 5000 },
+            );
+          } catch (error) {
+            // Another first archive may have won the unique-key upsert race.
+            if (!(
+              stamp !== null &&
+              error &&
+              typeof error === "object" &&
+              "code" in error &&
+              error.code === 11000
+            ))
+              throw error;
+          }
+        }
+      } else {
+        await model
+          .updateOne(
+            {
+              id,
+              "value.status": { $in: ["succeeded", "failed"] },
+              ...(stamp === null ? {} : { archivedAt: null }),
+            },
+            { $set: { archivedAt: stamp } },
+            { runValidators: true, maxTimeMS: 5000 },
+          )
+          .exec();
+      }
+      const updated = await repository.get(id);
+      return (
+        updated ?? ((await repository.isDeleted(id)) ? "deleted" : "missing")
+      );
+    },
+    async remove(id, deletedAt) {
+      const stamp = mutationDate(deletedAt);
+      if (!stamp) throw databaseUnavailable();
+      const current = await repository.get(id);
+      if (!current)
+        return (await repository.isDeleted(id)) ? "deleted" : "missing";
+      if (current.status === "running") return "running";
+      if (id.startsWith("legacy-")) {
+        const key = legacyKey(id);
+        await legacy.findOneAndReplace(
+          { key, deletedAt: null },
+          { key, deletedAt: stamp },
+          { returnDocument: "after", maxTimeMS: 5000 },
+        );
+      } else {
+        // The retained unique identity is the permanent replay admission barrier.
+        await model.collection.findOneAndReplace(
+          { id, "value.status": { $in: ["succeeded", "failed"] } },
+          { id, deletedAt: stamp },
+          { returnDocument: "after", maxTimeMS: 5000 },
+        );
+      }
+      if (await repository.isDeleted(id)) return "deleted";
+      const remaining = await repository.get(id);
+      return remaining?.status === "running" ? "running" : "missing";
     },
     async insert(value) {
       const run = validateRun(value);
@@ -323,27 +599,39 @@ export async function connectMongoRuns(
       };
       if (inputs) filter["value.inputs"] = normalizeInputs(source, inputs);
       const entry = await model
-        .findOne(filter)
-        .sort({ createdAt: -1, id: -1 })
-        .maxTimeMS(5000)
-        .lean()
+        .aggregate([
+          { $match: filter },
+          liveDocuments("id"),
+          visibleDocuments("active"),
+          { $sort: { createdAt: -1, id: -1 } },
+          { $limit: 1 },
+        ])
+        .option({ maxTimeMS: 5000 })
         .exec();
-      const current = entry ? storedRun(entry) : null;
+      const current = entry[0] ? storedRun(entry[0]) : null;
       const key =
         source === "tiobe"
           ? "tiobe"
           : source === "amazon" && inputs
             ? `amazon:${inputs["query"]}`
             : null;
-      const legacyEntry = key
-        ? await legacy.findOne({ key }, { maxTimeMS: 5000 })
-        : source === "amazon" && !inputs
-          ? await legacy.findOne(
-              { key: /^amazon:/u },
-              { sort: { createdAt: -1, key: -1 }, maxTimeMS: 5000 },
-            )
-          : null;
-      const older = legacyEntry ? legacyRun(legacyEntry) : null;
+      const candidates =
+        key || (source === "amazon" && !inputs)
+          ? await legacy
+              .aggregate(
+                [
+                  { $match: key ? { key } : { key: /^amazon:/u } },
+                  liveDocuments("key"),
+                  ...legacyManagement(),
+                  visibleDocuments("active", true),
+                  { $sort: { createdAt: -1, key: -1 } },
+                  { $limit: 1 },
+                ],
+                { maxTimeMS: 5000 },
+              )
+              .toArray()
+          : [];
+      const older = candidates[0] ? legacyRun(candidates[0]) : null;
       return current && older
         ? order(current).time >= order(older).time
           ? current

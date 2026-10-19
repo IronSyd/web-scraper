@@ -14,9 +14,22 @@ These captures show the actual local interface with **illustrative sample data**
 
 _Overview brings the four collectors and recent saved work into one workspace._
 
-![Webby saved-run view showing the collection outcome, requested inputs, time metadata and results](docs/images/saved-results.png)
+<details>
+<summary>Saved results and history</summary>
+
+![Webby Indeed saved-run view with the saved outcome, requested keyword and location, timestamps and three illustrative job records](docs/images/saved-results.png)
 
 _Saved runs retain the request context and outcome so results can be reopened after reload._
+
+![Webby History with source and visibility filters plus Archive and Delete actions for saved runs from all four sources](docs/images/history.png)
+
+_History keeps completed requests together. Archived runs remain recoverable and can be restored._
+
+![Webby confirmation dialog identifying a saved Indeed run, its timestamp and record count before permanent deletion](docs/images/delete-confirmation.png)
+
+_Permanent deletion requires confirmation; running collections remain protected._
+
+</details>
 
 <details>
 <summary>Mobile workspace</summary>
@@ -32,6 +45,7 @@ _The same workspace adapts to a narrow screen with drawer navigation._
 - **Collects by source:** book queries, stay dates/occupancy, job keywords/location and programming-language rankings.
 - **Cleans without guessing:** validates identities and URLs, normalizes text, removes duplicates and preserves qualified prices and missing values.
 - **Keeps saved work:** immutable successful snapshots, separate failed attempts, stable saved-run URLs and filterable history.
+- **Manages history:** archive and restore saved runs, or permanently delete a completed run after confirmation.
 - **Makes activity visible:** a source-aware header shows an observed collection and its verified outcome; saved-data browsing stays available with fresh collection paused.
 
 ## How it works
@@ -86,6 +100,8 @@ The header names an observed active source, such as **Collecting Indeed…**, an
 
 History and saved-run URLs reopen recorded inputs, status, counts and timestamps. Snapshots do not expire automatically and are not presented as continuously refreshed data. Legacy cache records remain readable with an honest unknown original collection time where necessary. Keep the Mongo volume: removing it deletes saved work.
 
+In **History**, use **Active** or **Archived** to find runs. Archive hides a run from normal history and latest source results while preserving its saved URL and data. Restore makes it eligible again. **Delete** requires confirmation and permanently removes that run's saved payload; its URL then reports that it was deleted. A minimal retired identifier remains to prevent an old request from collecting again. Running collections cannot be archived or deleted. These actions work while fresh collection is paused and never scrape.
+
 ## Tooling and checks
 
 The selected environment is Windows AMD64 with Node 24.22.0, pnpm 11.28.6, Python 3.14.8 and MongoDB 8.0.34. JavaScript dependencies use `pnpm-lock.yaml`; Python dependencies use hash-locked requirements. The Mongo image is digest-pinned in `compose.yaml`.
@@ -101,6 +117,8 @@ The complete check requires the separate verification lock, installed Playwright
 Independent [Python collector commands](collectors/python/README.md) and [browser/PDF utilities](tools/browser/README.md) are also available. Their live commands make external requests; successful PDF export alone does not certify readability.
 
 This is a local application, not an authenticated public service. Source markup, provider access and allowances can change. See [verification and operational limits](docs/verification.md) before a live demonstration or a deployment decision.
+
+Source references and adaptation boundaries are documented in [provenance](docs/provenance.md). Public source visibility does not add a blanket license or change third-party rights.
 
 ## Documentation
 

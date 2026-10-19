@@ -198,6 +198,271 @@ test("Durable history survives reopen, preserves legacy bytes and enforces owner
         seen.indexOf(legacyId("amazon:\uE000")),
       "History tie ordering matches Mongo's UTF-8 binary collation.",
     );
+    // Management changes envelopes/side metadata, never saved snapshot values.
+    const archiveAt = "2026-10-20T12:00:00.000Z",
+      laterArchiveAt = "2026-10-21T12:00:00.000Z",
+      deletedAt = "2026-10-22T12:00:00.000Z";
+    const runs = inspection.db.collection("collectionruns"),
+      states = inspection.db.collection("collectionlegacyrunstates");
+    const immutableValue = JSON.stringify(
+      (await runs.findOne({ id: runId(1) })).value,
+    );
+    const legacyBeforeArchive = JSON.stringify(
+      await legacy.find({}).sort({ key: 1 }).toArray(),
+    );
+    for (const id of [runId(1), runId(2), prior.id]) {
+      assert.equal(
+        (await runtime.repository.archive(id, archiveAt)).archivedAt,
+        archiveAt,
+      );
+      assert.equal(
+        (await runtime.repository.archive(id, laterArchiveAt)).archivedAt,
+        archiveAt,
+        "Repeated archive retains its original timestamp.",
+      );
+    }
+    assert.equal(
+      JSON.stringify((await runs.findOne({ id: runId(1) })).value),
+      immutableValue,
+    );
+    assert.equal(
+      JSON.stringify(await legacy.find({}).sort({ key: 1 }).toArray()),
+      legacyBeforeArchive,
+    );
+    const archivedIds = [];
+    let archiveCursor = null;
+    do {
+      const page = await runtime.repository.list({
+        source: "amazon",
+        visibility: "archived",
+        limit: 1,
+        cursor: archiveCursor,
+      });
+      archivedIds.push(...page.runs.map((run) => run.id));
+      archiveCursor = decodeCursor(page.nextCursor ?? undefined);
+    } while (archiveCursor);
+    assert.deepEqual(
+      new Set(archivedIds),
+      new Set([runId(1), runId(2), prior.id]),
+    );
+    const activeIds = (
+      await runtime.repository.list({
+        source: "amazon",
+        limit: 20,
+        cursor: null,
+      })
+    ).runs.map((run) => run.id);
+    assert.ok(activeIds.every((id) => !archivedIds.includes(id)));
+    assert.equal(
+      await runtime.repository.latest("amazon", sourceInputs.amazon),
+      null,
+    );
+    assert.notEqual(
+      (await runtime.repository.latest("amazon")).id,
+      prior.id,
+      "Legacy selection advances past the newest archived candidate before limiting.",
+    );
+    for (const id of [runId(1), runId(2), prior.id]) {
+      assert.equal(
+        (await runtime.repository.archive(id, null)).archivedAt,
+        null,
+      );
+      assert.equal(
+        (await runtime.repository.archive(id, null)).archivedAt,
+        null,
+      );
+    }
+    assert.equal(
+      (await runtime.repository.latest("amazon", sourceInputs.amazon)).id,
+      runId(2),
+    );
+    assert.equal(
+      JSON.stringify(await legacy.find({}).sort({ key: 1 }).toArray()),
+      legacyBeforeArchive,
+    );
+    assert.deepEqual((await runtime.repository.get(prior.id)).data, prior.data);
+
+    // Both a current run and a virtual legacy identity retire atomically.
+    assert.deepEqual(
+      await Promise.all(
+        Array.from({ length: 4 }, () =>
+          runtime.repository.remove(runId(2), deletedAt),
+        ),
+      ),
+      ["deleted", "deleted", "deleted", "deleted"],
+    );
+    const retired = await runs.findOne({ id: runId(2) });
+    assert.deepEqual(Object.keys(retired).sort(), ["_id", "deletedAt", "id"]);
+    assert.equal(retired.deletedAt.toISOString(), deletedAt);
+    assert.equal(await runtime.repository.get(runId(2)), null);
+    assert.equal(await runtime.repository.isDeleted(runId(2)), true);
+    assert.equal(await runtime.repository.archive(runId(2), null), "deleted");
+    assert.equal(await runtime.repository.insert(runningRun(runId(2))), false);
+    assert.equal(
+      (await runtime.repository.latest("amazon", sourceInputs.amazon)).id,
+      runId(1),
+    );
+    const tiobeLegacyId = legacyId("tiobe");
+    await runtime.repository.archive(tiobeLegacyId, archiveAt);
+    assert.equal(
+      await runtime.repository.remove(tiobeLegacyId, deletedAt),
+      "deleted",
+    );
+    assert.equal(
+      await runtime.repository.remove(tiobeLegacyId, deletedAt),
+      "deleted",
+    );
+    assert.equal(
+      await runtime.repository.archive(tiobeLegacyId, null),
+      "deleted",
+    );
+    const retiredLegacy = await legacy.findOne({ key: "tiobe" });
+    assert.deepEqual(Object.keys(retiredLegacy).sort(), [
+      "_id",
+      "deletedAt",
+      "key",
+    ]);
+    assert.equal(retiredLegacy.deletedAt.toISOString(), deletedAt);
+    assert.equal(await runtime.repository.get(tiobeLegacyId), null);
+    assert.equal(await runtime.repository.isDeleted(tiobeLegacyId), true);
+    assert.equal((await runtime.repository.latest("tiobe")).id, runId(6));
+    assert.equal(
+      await runtime.repository.archive(runId(99), archiveAt),
+      "missing",
+    );
+    assert.equal(
+      await runtime.repository.remove(runId(99), deletedAt),
+      "missing",
+    );
+
+    // A collector can finish while management is requested, but its running row
+    // must not disappear or be archived before the terminal atomic write.
+    let releaseCollector,
+      managedCalls = 0;
+    const barrier = new Promise((resolve) => {
+      releaseCollector = resolve;
+    });
+    const managed = createRunService({
+      repository: runtime.repository,
+      collectionEnabled: true,
+      collectors: {
+        amazon: async () => {
+          managedCalls++;
+          await barrier;
+          return [bookRecord()];
+        },
+      },
+    });
+    const managedBody = {
+      source: "amazon",
+      inputs: sourceInputs.amazon,
+      requestId: runId(30),
+    };
+    await managed.submit(managedBody);
+    assert.equal(
+      await runtime.repository.archive(runId(30), archiveAt),
+      "running",
+    );
+    assert.equal(
+      await runtime.repository.remove(runId(30), deletedAt),
+      "running",
+    );
+    assert.equal((await runtime.repository.get(runId(30))).status, "running");
+    releaseCollector();
+    await managed.idle();
+    const terminal = await runtime.repository.get(runId(30));
+    const concurrent = await Promise.all([
+      runtime.repository.archive(runId(30), archiveAt),
+      runtime.repository.remove(runId(30), deletedAt),
+    ]);
+    assert.equal(concurrent[1], "deleted");
+    assert.equal(await runtime.repository.get(runId(30)), null);
+    assert.equal(
+      await runtime.repository.finish(terminal),
+      null,
+      "A later terminal finish cannot resurrect a retired identity.",
+    );
+    await assert.rejects(managed.submit(managedBody), { code: "RUN_DELETED" });
+    assert.equal(managedCalls, 1);
+    await managed.close();
+
+    // Malformed management/deletion metadata is a storage error, not absence.
+    await runs.updateOne({ id: runId(1) }, { $set: { archivedAt: "invalid" } });
+    await assert.rejects(runtime.repository.get(runId(1)), {
+      code: "DATABASE_UNAVAILABLE",
+    });
+    await assert.rejects(runtime.repository.list({ limit: 50, cursor: null }), {
+      code: "DATABASE_UNAVAILABLE",
+    });
+    await runs.updateOne({ id: runId(1) }, { $set: { archivedAt: null } });
+    await states.updateOne(
+      { _id: "amazon:query" },
+      { $set: { archivedAt: new Date(archiveAt), unexpected: true } },
+    );
+    await assert.rejects(runtime.repository.get(prior.id), {
+      code: "DATABASE_UNAVAILABLE",
+    });
+    await assert.rejects(runtime.repository.list({ limit: 50, cursor: null }), {
+      code: "DATABASE_UNAVAILABLE",
+    });
+    await states.updateOne(
+      { _id: "amazon:query" },
+      { $set: { archivedAt: null }, $unset: { unexpected: "" } },
+    );
+    await runs.updateOne({ id: runId(2) }, { $set: { deletedAt: "invalid" } });
+    await assert.rejects(runtime.repository.get(runId(2)), {
+      code: "DATABASE_UNAVAILABLE",
+    });
+    await assert.rejects(runtime.repository.isDeleted(runId(2)), {
+      code: "DATABASE_UNAVAILABLE",
+    });
+    await runs.updateOne(
+      { id: runId(2) },
+      { $set: { deletedAt: new Date(deletedAt) } },
+    );
+    await legacy.updateOne(
+      { key: "tiobe" },
+      { $set: { data: languageRecords() } },
+    );
+    await assert.rejects(runtime.repository.get(tiobeLegacyId), {
+      code: "DATABASE_UNAVAILABLE",
+    });
+    await legacy.updateOne({ key: "tiobe" }, { $unset: { data: "" } });
+
+    // Archive state and permanent replay barriers survive connection reopening.
+    await runtime.repository.archive(runId(1), archiveAt);
+    await runtime.repository.archive(prior.id, archiveAt);
+    await runtime.close();
+    runtime = await connectMongoRuns(uri);
+    assert.equal(
+      (await runtime.repository.get(runId(1))).archivedAt,
+      archiveAt,
+    );
+    assert.equal(
+      (await runtime.repository.get(prior.id)).archivedAt,
+      archiveAt,
+    );
+    assert.equal(await runtime.repository.isDeleted(runId(2)), true);
+    assert.equal(await runtime.repository.isDeleted(tiobeLegacyId), true);
+    let replayCalls = 0;
+    const reopened = createRunService({
+      repository: runtime.repository,
+      collectionEnabled: true,
+      collectors: {
+        amazon: async () => {
+          replayCalls++;
+          return [bookRecord()];
+        },
+      },
+    });
+    await assert.rejects(
+      reopened.submit({ ...managedBody, requestId: runId(2) }),
+      { code: "RUN_DELETED" },
+    );
+    assert.equal(replayCalls, 0);
+    await reopened.close();
+    await runtime.repository.archive(runId(1), null);
+    await runtime.repository.archive(prior.id, null);
     for (const [field, changed, restored, lookup] of [
       ["id", runId(90), runId(1), runId(90)],
       ["source", "indeed", "amazon", runId(1)],
@@ -247,6 +512,7 @@ test("Durable history survives reopen, preserves legacy bytes and enforces owner
           "collectionruns",
           "collectionruntimeowners",
           "collectionbatches",
+          "collectionlegacyrunstates",
         ]);
         const collections = await inspection.db
           .listCollections({}, { nameOnly: true })

@@ -49,20 +49,46 @@ export function runningRun(id = runId(), source = "amazon") {
     completedAt: null,
     collectedAt: null,
     savedAt: stamp,
+    archivedAt: null,
     resultCount: 0,
     data: null,
     error: null,
   };
 }
 export function memoryRuns(seed = []) {
-  const entries = new Map(seed.map((run) => [run.id, structuredClone(run)]));
+  const entries = new Map(
+    seed.map((run) => [run.id, structuredClone({ archivedAt: null, ...run })]),
+  );
+  const retired = new Set();
   return {
     entries,
+    retired,
     async get(id) {
       return structuredClone(entries.get(id) ?? null);
     },
+    async isDeleted(id) {
+      return retired.has(id);
+    },
+    async archive(id, archivedAt) {
+      if (retired.has(id)) return "deleted";
+      const run = entries.get(id);
+      if (!run) return "missing";
+      if (run.status === "running") return "running";
+      run.archivedAt =
+        archivedAt === null ? null : (run.archivedAt ?? archivedAt);
+      return structuredClone(run);
+    },
+    async remove(id) {
+      if (retired.has(id)) return "deleted";
+      const run = entries.get(id);
+      if (!run) return "missing";
+      if (run.status === "running") return "running";
+      retired.add(id);
+      entries.delete(id);
+      return "deleted";
+    },
     async insert(run) {
-      if (entries.has(run.id)) return false;
+      if (entries.has(run.id) || retired.has(run.id)) return false;
       entries.set(run.id, structuredClone(run));
       return true;
     },
@@ -71,9 +97,12 @@ export function memoryRuns(seed = []) {
         entries.set(run.id, structuredClone(run));
       return structuredClone(entries.get(run.id) ?? null);
     },
-    async list({ source, limit, cursor }) {
+    async list({ source, visibility = "active", limit, cursor }) {
       const sorted = [...entries.values()]
         .filter((run) => !source || run.source === source)
+        .filter((run) =>
+          visibility === "archived" ? Boolean(run.archivedAt) : !run.archivedAt,
+        )
         .filter((run) => {
           const item = order(run);
           return (
@@ -101,6 +130,7 @@ export function memoryRuns(seed = []) {
             (run) =>
               run.source === source &&
               run.status === "succeeded" &&
+              !run.archivedAt &&
               (!inputs ||
                 JSON.stringify(run.inputs) === JSON.stringify(inputs)),
           )

@@ -1,6 +1,6 @@
 # Repository diagrams
 
-The two editable Mermaid sources describe the collection pipeline and the separate collection/saved-data paths. Checked-in PNG images display without GitHub's interactive Mermaid renderer; SVG versions support full-size viewing. Their titles/descriptions are embedded in SVG, and the documentation supplies image alternative text and surrounding explanations.
+The two editable Mermaid sources describe the collection pipeline and the separate collection, saved-data and History-management paths. The architecture graph has 13 nodes and 20 edges: History's explicit PATCH or confirmed DELETE passes validation and a guarded repository mutation without entering a source adapter. Saved-data GETs also avoid collection. Checked-in PNG images display without GitHub's interactive Mermaid renderer; SVG versions support full-size viewing. Their titles/descriptions are embedded in SVG, and the documentation supplies image alternative text and surrounding explanations.
 
 ## Local regeneration
 

@@ -1,9 +1,10 @@
-import { Link } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { sourceNames } from "../api.js";
 import { formatTime } from "../format.js";
 
 /** @param {{run:import('../api.js').RunSummary}} props */
 export function RunMetadata({ run }) {
+  const { id: currentRunId } = useParams();
   return (
     <div className="run-context surface-panel">
       <p className="run-meta-heading">
@@ -45,9 +46,18 @@ export function RunMetadata({ run }) {
           </div>
         ))}
       </dl>
-      <Link to={`/runs/${encodeURIComponent(run.id)}`} className="small">
-        Open saved run
-      </Link>
+      {run.archivedAt && (
+        <p className="archive-notice">
+          Archived on {formatTime(run.archivedAt)}. This run is hidden from
+          active history and latest results.{" "}
+          <Link to="/history?visibility=archived">View archived history</Link>
+        </p>
+      )}
+      {run.id !== currentRunId && (
+        <Link to={`/runs/${encodeURIComponent(run.id)}`} className="small">
+          Open saved run
+        </Link>
+      )}
     </div>
   );
 }

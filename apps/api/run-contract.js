@@ -317,6 +317,7 @@ export function summary(run) {
     completedAt: run.completedAt,
     collectedAt: run.collectedAt,
     savedAt: run.savedAt,
+    archivedAt: run.archivedAt ?? null,
     resultCount: run.resultCount,
     error: run.error,
   };
@@ -412,6 +413,15 @@ export function validateRun(value) {
     const id = value["id"],
       provenance = value["provenance"],
       status = value["status"];
+    const archivedAt = value["archivedAt"] ?? null;
+    if (
+      archivedAt !== null &&
+      (typeof archivedAt !== "string" ||
+        !Number.isFinite(Date.parse(archivedAt)) ||
+        new Date(archivedAt).toISOString() !== archivedAt ||
+        status === "running")
+    )
+      throw new Error();
     if (
       typeof id !== "string" ||
       (provenance !== "collection" && provenance !== "legacy-cache") ||
@@ -507,6 +517,7 @@ export function validateRun(value) {
       completedAt: dates["completedAt"] ?? null,
       collectedAt: dates["collectedAt"] ?? null,
       savedAt: dates["savedAt"] ?? null,
+      archivedAt,
       resultCount: data?.length ?? 0,
       data,
       error,

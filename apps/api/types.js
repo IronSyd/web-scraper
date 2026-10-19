@@ -11,12 +11,12 @@
  * @typedef {{name:string,url:string,price:string|null,currency:string|null,rating:string|null,reviewCount:number|null,location:string|null}} Hotel
  * @typedef {Language[]|Book[]|Job[]|Hotel[]} RunData
  * @typedef {{code:string,message:string}} RunError
- * @typedef {{id:string,source:Source,inputs:RunInputs,status:'running'|'succeeded'|'failed',provenance:'collection'|'legacy-cache',createdAt:string|null,startedAt:string|null,completedAt:string|null,collectedAt:string|null,savedAt:string|null,resultCount:number,data:RunData|null,error:RunError|null}} Run
+ * @typedef {{id:string,source:Source,inputs:RunInputs,status:'running'|'succeeded'|'failed',provenance:'collection'|'legacy-cache',createdAt:string|null,startedAt:string|null,completedAt:string|null,collectedAt:string|null,savedAt:string|null,archivedAt?:string|null,resultCount:number,data:RunData|null,error:RunError|null}} Run
  * @typedef {Omit<Run,'data'>} RunSummary
  * @typedef {{time:number,tie:string}} RunCursor
- * @typedef {{source?:Source,limit:number,cursor:RunCursor|null}} HistoryOptions
+ * @typedef {{source?:Source,visibility?:'active'|'archived',limit:number,cursor:RunCursor|null}} HistoryOptions
  * @typedef {{runs:RunSummary[],nextCursor:string|null}} RunHistory
- * @typedef {{get:(id:string)=>Promise<Run|null>,insert:(run:Run)=>Promise<boolean>,finish:(run:Run)=>Promise<Run|null>,list:(options:HistoryOptions)=>Promise<RunHistory>,latest:(source:Source,inputs?:RunInputs)=>Promise<Run|null>}} RunRepository
+ * @typedef {{get:(id:string)=>Promise<Run|null>,isDeleted:(id:string)=>Promise<boolean>,archive:(id:string,archivedAt:string|null)=>Promise<Run|'missing'|'running'|'deleted'>,remove:(id:string,deletedAt:string)=>Promise<'missing'|'running'|'deleted'>,insert:(run:Run)=>Promise<boolean>,finish:(run:Run)=>Promise<Run|null>,list:(options:HistoryOptions)=>Promise<RunHistory>,latest:(source:Source,inputs?:RunInputs)=>Promise<Run|null>}} RunRepository
  * @typedef {Partial<Record<Source,(inputs:RunInputs,signal:AbortSignal)=>Promise<RunData>>>} RunCollectors
  */
 export {};

@@ -26,6 +26,24 @@ Controlled API/browser tests cover saved-data reloads, history/filtering/paginat
 
 The offline PDF fixture verifies protected text/graphics, all ranking rows, repeated headers, page geometry and clipping, and renders every page at 120 DPI. Missing inspection packages or native renderer fail rather than silently skipping checks.
 
+## History management checks — 19 October 2026
+
+The local Archive/Restore and confirmed Delete increment passed **214 Node tests** (including two guarded Mongo integration tests), **59 Python tests** and **182 offline browser cases**, with six expected browser skips and zero failures in the final runs. The browser matrix covered desktop, wide desktop, tablet and mobile; its intercepted API blocked external traffic and never submitted collection to the application API.
+
+Strict API/web/browser JavaScript diagnostics, ESLint over all 52 maintained JavaScript files, whole-project Prettier, Ruff lint/format, strict mypy, compileall, `pip check`, `git diff --check` and the 53-module frontend build passed. Independent source review found no blocking issue. Batched synthetic screenshots confirmed readable archived-history controls and confirmation dialogs at all four sizes. Initial dialog focus failures were corrected before the final browser run.
+
+Controlled cases cover persistence/reopen, immutable legacy archive bytes, latest-result fallback, pre-limit filtering, confirmed/cancelled deletion, keyboard focus, running guards, concurrent mutations, minimal tombstones, malformed metadata and deleted UUID replay without dispatch. The real API was restarted only after an idle check, retaining enabled mode for the user's self-operated demo. Saved-data GETs confirmed the new DTO/filter contract; before/after raw stored-data hashes matched. No real snapshot was archived/deleted and no scraping call ran during verification.
+
+The earlier three browser-global lint errors in a private documentation-preview helper were corrected with explicit browser-global references, without disabling rules. A fresh `scripts/Run.ps1 check` passed the full-workspace lint, formatting, strict diagnostics, all 214 Node tests and 59 Python tests, plus the Python checks above. The helper correction remains local and is not part of the published source. Its isolated desktop/mobile diagram preview passed with zero network attempts; historical publication receipts were preserved.
+
+## Repository presentation checks — 19 October 2026
+
+Five refreshed interface screenshots use only fictional in-memory fixtures: desktop Overview, Indeed saved results, History controls, delete confirmation and mobile Overview. All image bytes and dimensions were checked against their capture receipt and visually reviewed. The isolated browser intercepted eight fixture GETs and128 local asset reads, with zero external or mutation requests and no browser errors. It never contacted the application database or production API.
+
+The architecture diagram now includes a separate guarded History-management path, alongside collection and saved reads. Local rendering and exact regeneration pass with13nodes/20edges, accessible SVG title/description, unclipped text and no active/external SVG content. The collection-flow diagram remains unchanged. PNGs, scalable SVGs and editable Mermaid sources are retained so documentation display does not depend on GitHub's interactive diagram renderer.
+
+These are local documentation checks, not evidence of public deployment, current upstream availability or live scraping. Screenshots remain explicitly labeled illustrative; source attribution and existing licensing limits remain documented.
+
 ## Live evidence
 
 One bounded Indeed and Booking collection-to-storage acceptance completed on 17 October 2026, with successful full-run/latest/history reads and browser reloads afterward. Existing Amazon and TIOBE legacy snapshots were preserved and reloaded; those sources were not recollected in that batch.

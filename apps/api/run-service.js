@@ -25,13 +25,39 @@ export function createRunService({
   /** @type {Map<string,{signature:string,promise:Promise<{run:import('./types.js').Run,status:number}>}>} */ const pending =
     new Map();
   /** @type {string|null} */ let reservation = null;
-  /** @param {()=>Promise<unknown>} operation */
+  /** @template T @param {()=>Promise<T>} operation @returns {Promise<T>} */
   async function database(operation) {
     try {
       return await operation();
     } catch {
       throw databaseUnavailable();
     }
+  }
+  /** @param {string} id */
+  function validateId(id) {
+    if (id.startsWith("legacy-")) legacyKey(id);
+    else requestId(id);
+  }
+  const deletedRun = () =>
+    new AppError(
+      410,
+      "RUN_DELETED",
+      "This saved run was permanently deleted. Choose another run from History.",
+    );
+  /** @param {string} id */
+  async function rejectDeleted(id) {
+    if (await database(() => repository.isDeleted(id))) throw deletedRun();
+  }
+  /** @param {'missing'|'running'|'deleted'} outcome */
+  function managementError(outcome) {
+    if (outcome === "deleted") return deletedRun();
+    return outcome === "running"
+      ? new AppError(
+          409,
+          "RUN_RUNNING",
+          "Wait for this collection to finish before managing its saved run.",
+        )
+      : new AppError(404, "RUN_NOT_FOUND", "This saved run does not exist.");
   }
   /** @param {import('./types.js').Run} run @param {AbortSignal} signal */
   async function execute(run, signal) {
@@ -144,6 +170,7 @@ export function createRunService({
             status: existing.status === "running" ? 202 : 200,
           };
         }
+        await rejectDeleted(id);
         if (!collectionEnabled)
           throw new AppError(
             503,
@@ -175,6 +202,7 @@ export function createRunService({
           completedAt: null,
           collectedAt: null,
           savedAt: stamp,
+          archivedAt: null,
           resultCount: 0,
           data: null,
           error: null,
@@ -191,7 +219,10 @@ export function createRunService({
         }
         if (!inserted) {
           const existing = await database(() => repository.get(id));
-          if (existing === null) throw databaseUnavailable();
+          if (existing === null) {
+            await rejectDeleted(id);
+            throw databaseUnavailable();
+          }
           const replay = validateRun(existing);
           if (
             replay.source !== source ||
@@ -227,10 +258,47 @@ export function createRunService({
     },
     /** @param {string} id */
     async get(id) {
-      if (id.startsWith("legacy-")) legacyKey(id);
-      else requestId(id);
+      validateId(id);
       const run = await database(() => repository.get(id));
+      if (run === null) await rejectDeleted(id);
       return run === null ? null : validateRun(run);
+    },
+    /** @param {string} id @param {unknown} body */
+    async archive(id, body) {
+      validateId(id);
+      if (
+        !isObject(body) ||
+        Object.keys(body).length !== 1 ||
+        typeof body["archived"] !== "boolean"
+      )
+        throw new AppError(
+          400,
+          "INVALID_INPUT",
+          "Provide archived as a boolean only.",
+        );
+      const result = await database(() =>
+        repository.archive(id, body["archived"] ? now().toISOString() : null),
+      );
+      if (typeof result === "string") throw managementError(result);
+      return validateRun(result);
+    },
+    /** @param {string} id @param {unknown} body */
+    async remove(id, body) {
+      validateId(id);
+      if (
+        !isObject(body) ||
+        Object.keys(body).length !== 1 ||
+        body["confirm"] !== true
+      )
+        throw new AppError(
+          400,
+          "CONFIRMATION_REQUIRED",
+          "Confirm permanent deletion explicitly.",
+        );
+      const result = await database(() =>
+        repository.remove(id, now().toISOString()),
+      );
+      if (result !== "deleted") throw managementError(result);
     },
     /** @param {import('./types.js').HistoryOptions} options */
     async list(options) {

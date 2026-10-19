@@ -798,6 +798,108 @@ small,
 .history-list {
   overflow-wrap: anywhere;
 }
+.history-filter-group {
+  flex: 0 1 20rem;
+  min-width: 180px;
+}
+.history-row-actions {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.history-action-help,
+.history-help,
+.archive-notice {
+  color: var(--webby-muted);
+  font-size: 0.8125rem;
+  max-width: 75ch;
+}
+.history-help {
+  margin: -8px 0 24px;
+}
+.archive-notice {
+  margin: 16px 0 0;
+}
+.history-announcement {
+  color: #386242;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.history-announcement:empty {
+  margin: 0;
+}
+#history-heading:focus {
+  outline: none;
+}
+.btn-outline-danger {
+  --bs-btn-color: #8a352d;
+  --bs-btn-border-color: #d7b8b0;
+  --bs-btn-hover-color: #8a352d;
+  --bs-btn-hover-bg: #fcf0ed;
+  --bs-btn-hover-border-color: #b9796e;
+  --bs-btn-active-color: #8a352d;
+  --bs-btn-active-bg: #f5e2dc;
+  --bs-btn-active-border-color: #b9796e;
+  --bs-btn-disabled-color: #64665d;
+  --bs-btn-disabled-border-color: #cbd0c3;
+}
+.btn-danger {
+  --bs-btn-color: #fff;
+  --bs-btn-bg: #943c33;
+  --bs-btn-border-color: #943c33;
+  --bs-btn-hover-color: #fff;
+  --bs-btn-hover-bg: #7d3029;
+  --bs-btn-hover-border-color: #7d3029;
+  --bs-btn-active-color: #fff;
+  --bs-btn-active-bg: #69271f;
+  --bs-btn-active-border-color: #69271f;
+  --bs-btn-disabled-color: #64665d;
+  --bs-btn-disabled-bg: #e7e5dc;
+  --bs-btn-disabled-border-color: #e7e5dc;
+  --bs-btn-disabled-opacity: 1;
+}
+.history-delete-dialog {
+  color: var(--webby-ink);
+  background: var(--webby-surface);
+  border: 1px solid var(--webby-line);
+  border-radius: var(--webby-radius);
+  padding: 28px;
+  width: min(32rem, calc(100% - 40px));
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  margin: auto;
+}
+.history-delete-dialog::backdrop {
+  background: rgb(36 38 35 / 55%);
+}
+.history-delete-dialog h2 {
+  font-size: 1.25rem;
+  margin-bottom: 20px;
+}
+.history-delete-dialog p {
+  font-size: 0.875rem;
+}
+.delete-run-identity {
+  font-weight: 600;
+}
+.delete-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+@media (max-width: 575.98px) {
+  .history-filter-group + .history-filter-group {
+    margin-top: 16px;
+  }
+  .history-delete-dialog {
+    padding: 20px;
+  }
+}
 .alert {
   --bs-alert-border-radius: 10px;
   font-size: 0.875rem;

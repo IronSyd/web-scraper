@@ -75,6 +75,7 @@ function saved(source = "amazon", index = 1) {
     completedAt: stamp,
     collectedAt: stamp,
     savedAt: stamp,
+    archivedAt: null,
     resultCount: data.length,
     data,
     error: null,
@@ -109,6 +110,8 @@ async function fakeApi(page, initial = []) {
   const store = {
     runs: new Map(initial.map((run) => [run.id, structuredClone(run)])),
     posts: [],
+    management: [],
+    deleted: new Set(),
     gets: [],
     enabled: true,
     failNext: false,
@@ -130,6 +133,10 @@ async function fakeApi(page, initial = []) {
     failRun: false,
     malformedRun: false,
     terminalPost: false,
+    failMutation: false,
+    holdMutation: false,
+    releaseMutation: null,
+    raceRunning: false,
   };
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
@@ -158,6 +165,8 @@ async function fakeApi(page, initial = []) {
     if (url.pathname === "/api/runs" && method === "POST") {
       const body = route.request().postDataJSON();
       store.posts.push(body);
+      if (store.deleted.has(body.requestId))
+        return json({ error: { code: "RUN_DELETED" } }, 410);
       const existing = store.runs.get(body.requestId);
       if (existing)
         return json(
@@ -206,7 +215,8 @@ async function fakeApi(page, initial = []) {
           ordered().find(
             (run) =>
               run.source === url.searchParams.get("source") &&
-              run.status === "succeeded",
+              run.status === "succeeded" &&
+              !run.archivedAt,
           ) ?? null,
       });
     }
@@ -216,10 +226,12 @@ async function fakeApi(page, initial = []) {
           store.releaseHistory = resolve;
         });
       if (store.failHistory) return json({ error: "synthetic failure" }, 503);
+      const archived = url.searchParams.get("visibility") === "archived";
       const filtered = ordered().filter(
         (run) =>
-          !url.searchParams.get("source") ||
-          run.source === url.searchParams.get("source"),
+          Boolean(run.archivedAt) === archived &&
+          (!url.searchParams.get("source") ||
+            run.source === url.searchParams.get("source")),
       );
       const offset =
         url.searchParams.get("cursor") === "next-page" ? store.pageSize : 0;
@@ -233,11 +245,45 @@ async function fakeApi(page, initial = []) {
           filtered.length > offset + store.pageSize ? "next-page" : null,
       });
     }
+    if (
+      url.pathname.startsWith("/api/runs/") &&
+      ["PATCH", "DELETE"].includes(method)
+    ) {
+      const id = decodeURIComponent(url.pathname.slice("/api/runs/".length));
+      const body = route.request().postDataJSON();
+      store.management.push({ method, id, body });
+      if (store.holdMutation)
+        await new Promise((resolve) => {
+          store.releaseMutation = resolve;
+        });
+      if (store.failMutation)
+        return json({ error: { code: "DATABASE_UNAVAILABLE" } }, 503);
+      if (store.deleted.has(id))
+        return method === "DELETE"
+          ? json({ id, deleted: true })
+          : json({ error: { code: "RUN_DELETED" } }, 410);
+      const run = store.runs.get(id);
+      if (!run) return json({ error: { code: "RUN_NOT_FOUND" } }, 404);
+      if (run.status === "running" || store.raceRunning)
+        return json({ error: { code: "RUN_RUNNING" } }, 409);
+      if (method === "PATCH") {
+        if (typeof body.archived !== "boolean")
+          return json({ error: { code: "INVALID_REQUEST" } }, 400);
+        run.archivedAt = body.archived ? "2026-10-19T12:00:00.000Z" : null;
+        return json({ run });
+      }
+      if (body.confirm !== true)
+        return json({ error: { code: "INVALID_REQUEST" } }, 400);
+      store.deleted.add(id);
+      store.runs.delete(id);
+      return json({ id, deleted: true });
+    }
     if (url.pathname.startsWith("/api/runs/") && method === "GET") {
       if (store.failRun) return json({ error: "synthetic failure" }, 503);
-      const run = store.runs.get(
-        decodeURIComponent(url.pathname.slice("/api/runs/".length)),
-      );
+      const id = decodeURIComponent(url.pathname.slice("/api/runs/".length));
+      if (store.deleted.has(id))
+        return json({ error: { code: "RUN_DELETED" } }, 410);
+      const run = store.runs.get(id);
       if (!run)
         return json(
           { error: { code: "NOT_FOUND", message: "private diagnostic" } },
@@ -299,6 +345,9 @@ for (const source of Object.keys(names)) {
       await expect(
         page.getByText("Saved successfully", { exact: true }),
       ).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Open saved run", exact: true }),
+      ).toHaveCount(0);
       await expect(page.locator(".collection-availability")).toHaveText(
         names[source] + " collection complete",
       );
@@ -317,6 +366,9 @@ for (const source of Object.keys(names)) {
         page.getByText("Saved successfully", { exact: true }),
       ).toBeVisible();
       await expect(page).toHaveURL(new RegExp(path + "$"));
+      await expect(
+        page.getByRole("link", { name: "Open saved run", exact: true }),
+      ).toHaveCount(0);
       expect(store.posts).toHaveLength(1);
       if (source === "booking")
         await expect(
@@ -327,6 +379,115 @@ for (const source of Object.keys(names)) {
       if (source === "amazon")
         await expect(page.getByText(/Or \$19.99 to buy/)).toBeVisible();
       await noOverflow(page);
+    },
+  );
+
+  test(
+    source + " saved link opens its snapshot and hides only the current run",
+    async ({ page }, testInfo) => {
+      const run = saved(source);
+      const store = await fakeApi(page, [run]);
+      store.enabled = false;
+      await page.goto("/sources/" + source);
+      const link = page.getByRole("link", {
+        name: "Open saved run",
+        exact: true,
+      });
+      await expect(link).toHaveAttribute("href", "/runs/" + run.id);
+      await link.click();
+      await expect(page).toHaveURL(new RegExp("/runs/" + run.id + "$"));
+      await expect(
+        page.getByRole("heading", { name: "Saved run · " + names[source] }),
+      ).toBeVisible();
+      await expect(
+        page.getByText("Saved successfully", { exact: true }),
+      ).toBeVisible();
+      await expect(link).toHaveCount(0);
+      await page.goto("/runs/" + run.id + "?view=saved");
+      await page.reload();
+      await expect(
+        page.getByText("Saved successfully", { exact: true }),
+      ).toBeVisible();
+      await expect(link).toHaveCount(0);
+      if (
+        source === "amazon" &&
+        ["desktop", "mobile"].includes(testInfo.project.name)
+      )
+        await page.screenshot({
+          path:
+            "artifacts/saved-run-link/" +
+            testInfo.project.name +
+            "-succeeded.png",
+          fullPage: true,
+          animations: "disabled",
+        });
+      await page.getByRole("link", { name: "View all history" }).click();
+      await expect(page).toHaveURL(/\/history$/);
+      const historyLink = page.locator(".activity-row a");
+      await expect(historyLink).toHaveAttribute("href", "/runs/" + run.id);
+      await historyLink.click();
+      await expect(
+        page.getByText("Saved successfully", { exact: true }),
+      ).toBeVisible();
+      await expect(link).toHaveCount(0);
+      expect(store.posts).toHaveLength(0);
+    },
+  );
+}
+
+for (const status of ["failed", "running"]) {
+  test(
+    status + " saved run keeps the link to a different previous success",
+    async ({ page }, testInfo) => {
+      const previous = saved("amazon", 1);
+      const current = running("amazon", 8);
+      if (status === "failed") finish(current, "failed");
+      const store = await fakeApi(page, [previous, current]);
+      store.enabled = false;
+      store.hold = true;
+      await page.goto("/runs/" + current.id);
+      await expect(page.locator(".run-context")).toHaveCount(2);
+      await expect(page.locator(".run-context").first()).toContainText(
+        status === "failed" ? "Collection failed" : "Collection running",
+      );
+      await expect(
+        page
+          .locator(".run-context")
+          .first()
+          .getByRole("link", { name: "Open saved run", exact: true }),
+      ).toHaveCount(0);
+      const previousLink = page.getByRole("link", {
+        name: "Open saved run",
+        exact: true,
+      });
+      await expect(previousLink).toHaveCount(1);
+      await expect(previousLink).toHaveAttribute(
+        "href",
+        "/runs/" + previous.id,
+      );
+      await expect(
+        page.getByRole("heading", { name: "Example Python Book" }),
+      ).toBeVisible();
+      if (
+        status === "failed" &&
+        ["desktop", "mobile"].includes(testInfo.project.name)
+      )
+        await page.screenshot({
+          path:
+            "artifacts/saved-run-link/" + testInfo.project.name + "-failed.png",
+          fullPage: true,
+          animations: "disabled",
+        });
+      await previousLink.click();
+      await expect(page).toHaveURL(new RegExp("/runs/" + previous.id + "$"));
+      await expect(
+        page.getByRole("heading", { name: "Saved results", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByText("Saved successfully", { exact: true }),
+      ).toBeVisible();
+      await expect(previousLink).toHaveCount(0);
+      expect(store.posts).toHaveLength(0);
     },
   );
 }
@@ -612,6 +773,320 @@ test("history preserves snapshots, filters and stable page URLs", async ({
   expect(store.posts).toHaveLength(0);
 });
 
+function historyRow(page, id) {
+  return page.locator(".history-list .activity-row").filter({
+    has: page.locator('a[href="/runs/' + id + '"]'),
+  });
+}
+
+test("history archive and restore persist while latest results and Overview exclude archives", async ({
+  page,
+}) => {
+  const previous = saved("amazon", 1);
+  const current = saved("amazon", 2);
+  previous.data[0].title = "Previous unarchived book";
+  current.data[0].title = "Newest saved book";
+  const store = await fakeApi(page, [previous, current]);
+  await page.goto("/history?source=amazon");
+  await historyRow(page, current.id)
+    .getByRole("button", { name: /^Archive\b/ })
+    .click();
+  await expect(historyRow(page, current.id)).toHaveCount(0);
+  expect(store.runs.get(current.id)).toEqual({
+    ...current,
+    archivedAt: "2026-10-19T12:00:00.000Z",
+  });
+  await page.reload();
+  await expect(historyRow(page, previous.id)).toBeVisible();
+  await expect(historyRow(page, current.id)).toHaveCount(0);
+  await page.goto("/");
+  await expect(
+    page.locator('.activity-row a[href="/runs/' + current.id + '"]'),
+  ).toHaveCount(0);
+  await page.goto("/sources/amazon");
+  await expect(
+    page.getByRole("heading", { name: "Previous unarchived book" }),
+  ).toBeVisible();
+  await page.goto("/runs/" + current.id);
+  await expect(
+    page.getByText(/hidden from active history and latest results/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Newest saved book" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "View archived history" }).click();
+  await expect(page.getByLabel("Visibility", { exact: true })).toHaveValue(
+    "archived",
+  );
+  await expect(historyRow(page, current.id)).toBeVisible();
+  await historyRow(page, current.id)
+    .getByRole("button", { name: /^Restore\b/ })
+    .click();
+  await expect(historyRow(page, current.id)).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator(".history-list .activity-row")).toHaveCount(0);
+  await page.goto("/sources/amazon");
+  await expect(
+    page.getByRole("heading", { name: "Newest saved book" }),
+  ).toBeVisible();
+  expect(store.management).toEqual([
+    { method: "PATCH", id: current.id, body: { archived: true } },
+    { method: "PATCH", id: current.id, body: { archived: false } },
+  ]);
+  expect(store.posts).toHaveLength(0);
+});
+
+test("delete confirmation traps focus and cancellation never mutates saved data", async ({
+  page,
+}, testInfo) => {
+  const run = saved("booking", 3);
+  const store = await fakeApi(page, [run]);
+  await page.goto("/history");
+  const trigger = historyRow(page, run.id).getByRole("button", {
+    name: /^Delete\b/,
+  });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Delete saved run?" });
+  const cancel = dialog.getByRole("button", { name: "Cancel", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(cancel).toBeFocused();
+  await expect(dialog).toContainText("Booking.com");
+  await expect(dialog).toContainText("London");
+  await expect(dialog).toContainText(/1 record/);
+  await expect(dialog).toContainText(/permanent|cannot be undone/i);
+  for (let index = 0; index < 6; index++) {
+    await page.keyboard.press("Tab");
+    expect(
+      await dialog.evaluate((element) =>
+        element.contains(document.activeElement),
+      ),
+    ).toBe(true);
+  }
+  await page.keyboard.press("Shift+Tab");
+  expect(
+    await dialog.evaluate((element) =>
+      element.contains(document.activeElement),
+    ),
+  ).toBe(true);
+  await noOverflow(page);
+  await page.screenshot({
+    path:
+      "artifacts/history-management/" +
+      testInfo.project.name +
+      "-delete-confirmation.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await cancel.click();
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(store.management).toHaveLength(0);
+  expect(store.runs.get(run.id)).toEqual(run);
+  expect(store.posts).toHaveLength(0);
+});
+
+test("confirmed deletion removes an archived snapshot and its URL has safe recovery", async ({
+  page,
+}, testInfo) => {
+  const previous = saved("indeed", 1);
+  const archived = saved("indeed", 2);
+  archived.archivedAt = "2026-10-19T12:00:00.000Z";
+  const store = await fakeApi(page, [previous, archived]);
+  await page.goto("/history?source=indeed&visibility=archived");
+  await expect(historyRow(page, archived.id)).toBeVisible();
+  await noOverflow(page);
+  await page.screenshot({
+    path:
+      "artifacts/history-management/" +
+      testInfo.project.name +
+      "-archived-history.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await historyRow(page, archived.id)
+    .getByRole("button", { name: /^Delete\b/ })
+    .click();
+  await page
+    .getByRole("button", { name: "Delete permanently", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Delete saved run?" }),
+  ).toBeHidden();
+  await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
+  await expect(page.locator(".history-list .activity-row")).toHaveCount(0);
+  expect(store.runs.has(archived.id)).toBe(false);
+  expect(store.deleted.has(archived.id)).toBe(true);
+  expect(store.runs.get(previous.id)).toEqual(previous);
+  await page.goto("/runs/" + archived.id);
+  await expect(page.getByRole("alert")).toContainText("permanently deleted");
+  await expect(
+    page.getByRole("link", { name: "View all history" }),
+  ).toBeVisible();
+  await expect(page.getByRole("article")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("alert")).toContainText("permanently deleted");
+  expect(store.management).toEqual([
+    { method: "DELETE", id: archived.id, body: { confirm: true } },
+  ]);
+  expect(store.posts).toHaveLength(0);
+});
+
+test("pending deletion prevents duplicate actions and dismissal until the saved response", async ({
+  page,
+}) => {
+  const run = saved();
+  const store = await fakeApi(page, [run]);
+  store.holdMutation = true;
+  await page.goto("/history");
+  await historyRow(page, run.id)
+    .getByRole("button", { name: /^Delete\b/ })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Delete saved run?" });
+  await dialog
+    .getByRole("button", { name: "Delete permanently", exact: true })
+    .click();
+  await expect.poll(() => store.releaseMutation !== null).toBe(true);
+  await expect(
+    dialog.getByRole("button", { name: "Cancel", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    dialog.getByRole("button", { name: /Deleting|Delete permanently/i }),
+  ).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  expect(store.management).toHaveLength(1);
+  expect(store.runs.has(run.id)).toBe(true);
+  store.releaseMutation();
+  await expect(dialog).toBeHidden();
+  await expect(historyRow(page, run.id)).toHaveCount(0);
+  expect(store.management).toHaveLength(1);
+  expect(store.posts).toHaveLength(0);
+});
+
+test("management failures keep the run and confirmation usable without automatic retries", async ({
+  page,
+}) => {
+  const run = saved();
+  const store = await fakeApi(page, [run]);
+  store.failMutation = true;
+  await page.goto("/history");
+  const row = historyRow(page, run.id);
+  await row.getByRole("button", { name: /^Archive\b/ }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(row).toBeVisible();
+  expect(store.runs.get(run.id).archivedAt).toBeNull();
+  const trigger = row.getByRole("button", { name: /^Delete\b/ });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Delete saved run?" });
+  await dialog
+    .getByRole("button", { name: "Delete permanently", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Cancel", exact: true }),
+  ).toBeFocused();
+  expect(store.management).toHaveLength(2);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(trigger).toBeFocused();
+  await expect(row).toBeVisible();
+  expect(store.runs.get(run.id)).toEqual(run);
+  expect(store.deleted.has(run.id)).toBe(false);
+  expect(store.management).toHaveLength(2);
+  expect(store.posts).toHaveLength(0);
+});
+
+test("running actions are disabled and a server-side running race leaves a terminal row intact", async ({
+  page,
+}) => {
+  const active = running("indeed", 8);
+  const terminal = saved("booking", 3);
+  const store = await fakeApi(page, [active, terminal]);
+  store.hold = true;
+  await page.goto("/history");
+  const activeRow = historyRow(page, active.id);
+  await expect(
+    activeRow.getByRole("button", { name: /^Archive\b/ }),
+  ).toBeDisabled();
+  await expect(
+    activeRow.getByRole("button", { name: /^Delete\b/ }),
+  ).toBeDisabled();
+  await expect(activeRow).toContainText(/running|finish/i);
+  store.raceRunning = true;
+  await historyRow(page, terminal.id)
+    .getByRole("button", { name: /^Archive\b/ })
+    .click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(historyRow(page, terminal.id)).toBeVisible();
+  expect(store.runs.get(terminal.id)).toEqual(terminal);
+  expect(store.management).toHaveLength(1);
+  expect(store.posts).toHaveLength(0);
+});
+
+test("history management preserves filters and returns emptied cursor pages to newest", async ({
+  page,
+}) => {
+  const old = saved("amazon", 1);
+  const newer = saved("amazon", 2);
+  const job = saved("indeed", 3);
+  const store = await fakeApi(page, [old, newer, job]);
+  store.pageSize = 1;
+  await page.goto("/history?source=amazon");
+  await page.getByRole("button", { name: "Older runs" }).click();
+  await expect(historyRow(page, old.id)).toBeVisible();
+  await historyRow(page, old.id)
+    .getByRole("button", { name: /^Archive\b/ })
+    .click();
+  await expect(page).not.toHaveURL(/cursor=/);
+  await expect(page.getByLabel("Source", { exact: true })).toHaveValue(
+    "amazon",
+  );
+  await expect(historyRow(page, newer.id)).toBeVisible();
+  await page.getByLabel("Visibility", { exact: true }).selectOption("archived");
+  await expect(page).not.toHaveURL(/cursor=/);
+  await expect(historyRow(page, old.id)).toBeVisible();
+  await page.reload();
+  await expect(historyRow(page, old.id)).toBeVisible();
+  await page.getByLabel("Source", { exact: true }).selectOption("indeed");
+  await expect(page.getByLabel("Visibility", { exact: true })).toHaveValue(
+    "archived",
+  );
+  await expect(page.locator(".history-list .activity-row")).toHaveCount(0);
+  await page.getByLabel("Visibility", { exact: true }).selectOption("active");
+  await expect(historyRow(page, job.id)).toBeVisible();
+  expect(store.management).toHaveLength(1);
+  expect(store.posts).toHaveLength(0);
+});
+
+test("pending archive disables repeat mutation and failures leave the saved page link intact", async ({
+  page,
+}) => {
+  const run = saved();
+  const store = await fakeApi(page, [run]);
+  store.holdMutation = true;
+  await page.goto("/history");
+  const row = historyRow(page, run.id);
+  await row.getByRole("button", { name: /^Archive\b/ }).click();
+  await expect.poll(() => store.releaseMutation !== null).toBe(true);
+  await expect(
+    row.getByRole("button", { name: /Archiving|Archive/i }),
+  ).toBeDisabled();
+  await expect(row.getByRole("button", { name: /^Delete\b/ })).toBeDisabled();
+  expect(store.management).toHaveLength(1);
+  store.failMutation = true;
+  store.releaseMutation();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(row.getByRole("link")).toHaveAttribute(
+    "href",
+    "/runs/" + run.id,
+  );
+  expect(store.management).toHaveLength(1);
+  expect(store.posts).toHaveLength(0);
+});
+
 test("a failed fresh run retains the previous successful records and history", async ({
   page,
 }) => {
@@ -864,6 +1339,16 @@ test("legacy provenance and nullable fields remain honest", async ({
   ).toBeVisible();
   await expect(page.getByText("Author not listed")).toBeVisible();
   await expect(page.getByText("Price unavailable")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open saved run", exact: true }),
+  ).toHaveCount(0);
+  await page.reload();
+  await expect(
+    page.getByText(/Original collection time unavailable/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open saved run", exact: true }),
+  ).toHaveCount(0);
   expect(store.posts).toHaveLength(0);
 });
 

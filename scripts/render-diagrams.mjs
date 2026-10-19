@@ -68,7 +68,7 @@ try {
   );
   for (const [name, nodes, edges] of [
     ["collection-flow", 6, 5],
-    ["architecture", 11, 17],
+    ["architecture", 13, 20],
   ]) {
     const source = await readFile(
       path.join(root, `docs/diagrams/${name}.mmd`),

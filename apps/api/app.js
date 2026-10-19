@@ -91,7 +91,7 @@ export function createApp({
   app.get("/api/runs", async (req, res) => {
     if (
       Object.keys(req.query).some(
-        (key) => !["source", "limit", "cursor"].includes(key),
+        (key) => !["source", "limit", "cursor", "visibility"].includes(key),
       )
     )
       throw new AppError(
@@ -103,6 +103,13 @@ export function createApp({
       req.query["source"] === undefined
         ? undefined
         : sourceName(req.query["source"]);
+    const visibility = req.query["visibility"] ?? "active";
+    if (visibility !== "active" && visibility !== "archived")
+      throw new AppError(
+        400,
+        "INVALID_INPUT",
+        "Choose active or archived history.",
+      );
     const rawLimit = req.query["limit"],
       limit =
         rawLimit === undefined
@@ -119,6 +126,7 @@ export function createApp({
     res.json(
       await runs.list({
         source,
+        visibility,
         limit,
         cursor: decodeCursor(req.query["cursor"]),
       }),
@@ -138,6 +146,31 @@ export function createApp({
         "This saved run does not exist.",
       );
     res.json({ run });
+  });
+  /** @param {import('express').Request} req */
+  function managementRequest(req) {
+    if (Object.keys(req.query).length)
+      throw new AppError(
+        400,
+        "INVALID_INPUT",
+        "Run management does not accept query parameters.",
+      );
+    if (!req.is("application/json"))
+      throw new AppError(
+        415,
+        "JSON_REQUIRED",
+        "Send run management as application/json.",
+      );
+  }
+  app.patch("/api/runs/:id", async (req, res) => {
+    managementRequest(req);
+    res.json({ run: await runs.archive(req.params["id"] ?? "", req.body) });
+  });
+  app.delete("/api/runs/:id", async (req, res) => {
+    managementRequest(req);
+    const id = req.params["id"] ?? "";
+    await runs.remove(id, req.body);
+    res.json({ id, deleted: true });
   });
   app.get("/api/tiobe", async (_req, res) => {
     const run = await runs.latest("tiobe", {});

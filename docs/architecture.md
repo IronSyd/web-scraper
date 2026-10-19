@@ -18,9 +18,9 @@ Credentials remain in the server/CLI environment. The frontend receives validate
 
 ## Components and flow
 
-Collection and browsing use different paths. Only an explicit, enabled POST can dispatch a collector; GET requests read stored data or runtime status.
+Collection, browsing and history management use separate paths. Only an explicit, enabled POST can dispatch a collector; GET requests read saved data or runtime status. Explicit PATCH/confirmed DELETE requests manage terminal runs through the service/repository without entering a source adapter.
 
-![Architecture flow separating explicit collection through Express, the run service and four source adapters from saved-data reads backed by MongoDB](images/architecture.png)
+![Architecture separating explicit collection through four source adapters, saved-data reads and guarded archive or confirmed-delete operations backed by MongoDB](images/architecture.png)
 
 [Open the scalable architecture diagram](images/architecture.svg) · [Edit the Mermaid source](diagrams/architecture.mmd)
 
@@ -38,23 +38,29 @@ The independent Python CLI also offers standard and managed Amazon/Indeed/Bookin
 
 ## API surface
 
-| Method and route                                | Behavior                                                                                                                                              |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/health`                               | Runtime health, collection availability and nullable `activeRun: {id, source}`. It performs no database or collector work.                            |
-| `POST /api/runs`                                | Admit `{source, inputs, requestId}`; return a running attempt or an idempotent existing attempt. Disabled, busy and invalid requests fail explicitly. |
-| `GET /api/runs?source=...&limit=...&cursor=...` | Saved history; optional source filter, cursor pagination and limit 1–50, default 20.                                                                  |
-| `GET /api/runs/latest?source=...`               | Latest successful saved snapshot for a source, or `null`.                                                                                             |
-| `GET /api/runs/:id`                             | Exact saved attempt, including requested inputs, status, timestamps and data/error.                                                                   |
-| `GET /api/books/amazon?q=...`                   | Compatibility saved-cache read for matching Amazon inputs; 404 when absent.                                                                           |
-| `GET /api/tiobe`                                | Compatibility saved-cache read; 404 when absent.                                                                                                      |
+| Method and route                                               | Behavior                                                                                                                                                   |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/health`                                              | Runtime health, collection availability and nullable `activeRun: {id, source}`. It performs no database or collector work.                                 |
+| `POST /api/runs`                                               | Admit `{source, inputs, requestId}`; return a running attempt or an idempotent existing attempt. Disabled, busy and invalid requests fail explicitly.      |
+| `GET /api/runs?source=...&visibility=...&limit=...&cursor=...` | Saved history; optional source, active/archived visibility (default active), cursor and limit 1–50 (default 20).                                           |
+| `GET /api/runs/latest?source=...`                              | Latest successful saved snapshot for a source, or `null`.                                                                                                  |
+| `GET /api/runs/:id`                                            | Exact saved attempt, including requested inputs, status, timestamps and data/error.                                                                        |
+| `PATCH /api/runs/:id`                                          | JSON `{archived:boolean}` archives/restores a terminal run and returns its DTO. Running records return 409; deleted records return 410.                    |
+| `DELETE /api/runs/:id`                                         | JSON `{confirm:true}` permanently removes a terminal snapshot, returning `{id,deleted:true}`. Running records return 409; repeated deletion is idempotent. |
+| `GET /api/books/amazon?q=...`                                  | Compatibility saved-cache read for matching Amazon inputs; 404 when absent.                                                                                |
+| `GET /api/tiobe`                                               | Compatibility saved-cache read; 404 when absent.                                                                                                           |
 
 Supported source identifiers are `amazon`, `booking`, `indeed` and `tiobe`. The four [input/output contracts](../README.md#source-contracts) remain source-specific. Optional source fields remain nullable; cleaning does not fabricate values.
 
 ## Storage and recovery
 
-`collectionruns` holds distinct attempts with `running`, `succeeded` or `failed` status. Successful data is kept with collection/save metadata. A later failure does not overwrite an earlier successful snapshot. There is no automatic expiry or deletion.
+`collectionruns` holds distinct attempts with `running`, `succeeded` or `failed` status. Successful data is kept with collection/save metadata. A later failure does not overwrite an earlier successful snapshot. There is no automatic expiry or deletion. An envelope archive timestamp controls visibility without changing the snapshot. Archived records remain directly readable but are excluded from latest results, previous-success fallback and default history. Filters apply before pagination and latest selection.
 
-Existing `collectionbatches` remain unchanged and appear as legacy saved runs. Unknown original collection time is labeled honestly; an actual stored creation time can be shown as save time. New installations have neither legacy nor current records until populated deliberately.
+Existing `collectionbatches` appear as legacy saved runs. Archive/restore metadata lives separately in `collectionlegacyrunstates`, preserving original legacy document values. Unknown collection time stays honest; an actual creation time can be shown as save time. New installations start empty.
+
+Confirmed permanent deletion replaces the current envelope with `{id,deletedAt}` or the legacy envelope with `{key,deletedAt}`, retaining MongoDB's `_id`. This single-document transition removes the payload, inputs and original timestamps atomically while preserving the duplicate-request barrier. Deleted URLs and UUID replays return410; the unique current ID still prevents reuse. Explicit terminal-state predicates reject management of running attempts. Minimal identity retention is not secure erasure of database journals or backups. A concurrent read may observe the snapshot immediately before deletion; it cannot dispatch collection again.
+
+History management follows UI → Express/service → repository → MongoDB and never enters a source adapter, as the separate management path in the diagram shows. These explicit PATCH/DELETE writes use the same loopback access checks and remain available while fresh collection is paused.
 
 A `collectionruntimeowners` guard refuses a second live runtime on the same database. Normal shutdown stops admission, cancels/cleans up work and releases ownership after confirmed cleanup. On restart, abandoned running attempts become interrupted failures; scraping is never resumed automatically. Uncertain cleanup or terminal persistence blocks further admission rather than risking overlapping work.
 

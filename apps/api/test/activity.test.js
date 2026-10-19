@@ -37,7 +37,16 @@ for (const source of ["amazon", "booking", "indeed", "tiobe"])
     const savedRepository = memoryRuns();
     let repositoryCalls = 0;
     const repository = Object.fromEntries(
-      ["get", "insert", "finish", "list", "latest"].map((name) => [
+      [
+        "get",
+        "isDeleted",
+        "archive",
+        "remove",
+        "insert",
+        "finish",
+        "list",
+        "latest",
+      ].map((name) => [
         name,
         async (...args) => {
           repositoryCalls++;
@@ -112,6 +121,9 @@ test("Paused health reads do not touch unavailable storage or invoke any collect
     {
       repository: {
         get: unavailable,
+        isDeleted: unavailable,
+        archive: unavailable,
+        remove: unavailable,
         insert: unavailable,
         finish: unavailable,
         list: unavailable,

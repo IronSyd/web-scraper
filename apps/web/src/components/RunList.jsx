@@ -23,8 +23,8 @@ function RunContext({ run }) {
   return <span className="activity-context">Book search</span>;
 }
 
-/** @param {{runs:import('../api.js').RunSummary[]}} props */
-export default function RunList({ runs }) {
+/** @param {{runs:import('../api.js').RunSummary[], renderActions?:(run:import('../api.js').RunSummary)=>import('react').ReactNode}} props */
+export default function RunList({ runs, renderActions }) {
   return (
     <ol className="activity-list history-list">
       {runs.map((run) => {
@@ -63,6 +63,9 @@ export default function RunList({ runs }) {
             </div>
             <div className="activity-outcome">
               <RunStatus status={run.status} />
+              {run.archivedAt && (
+                <span className="activity-count">Archived</span>
+              )}
               <span className="activity-count">
                 {run.resultCount} {run.resultCount === 1 ? "record" : "records"}
                 {run.status === "succeeded" ? " in snapshot" : " saved"}
@@ -76,6 +79,9 @@ export default function RunList({ runs }) {
                 <span>Unavailable</span>
               )}
             </div>
+            {renderActions && (
+              <div className="history-row-actions">{renderActions(run)}</div>
+            )}
           </li>
         );
       })}

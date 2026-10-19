@@ -4,7 +4,7 @@
 /** @typedef {{jobId: string, title: string, company: string, location: string, url: string}} Job */
 /** @typedef {{name: string, url: string, price: string|null, currency: string|null, rating: string|null, reviewCount: number|null, location: string|null}} Hotel */
 /** @typedef {Record<string, string|number>} Inputs */
-/** @typedef {{id:string,source:Source,inputs:Inputs,status:'running'|'succeeded'|'failed',provenance:'collection'|'legacy-cache',createdAt:string|null,startedAt:string|null,completedAt:string|null,collectedAt:string|null,savedAt:string|null,resultCount:number,data:(Book|Language|Job|Hotel)[]|null,error:{code:string,message:string}|null}} Run */
+/** @typedef {{id:string,source:Source,inputs:Inputs,status:'running'|'succeeded'|'failed',provenance:'collection'|'legacy-cache',createdAt:string|null,startedAt:string|null,completedAt:string|null,collectedAt:string|null,savedAt:string|null,archivedAt?:string|null,resultCount:number,data:(Book|Language|Job|Hotel)[]|null,error:{code:string,message:string}|null}} Run */
 /** @typedef {Omit<Run,'data'>} RunSummary */
 /** @typedef {{id:string,source:Source}} ActiveRun */
 /** @type {Set<(event:{run:Run,admitted:boolean})=>void>} */
@@ -241,6 +241,8 @@ function isRun(value, summary = false) {
       value.collectedAt,
       value.savedAt,
     ].every(date) ||
+    !(value.archivedAt === undefined || date(value.archivedAt)) ||
+    (value.status === "running" && value.archivedAt != null) ||
     typeof value.resultCount !== "number" ||
     !Number.isSafeInteger(value.resultCount) ||
     value.resultCount < 0
@@ -308,8 +310,16 @@ export class DataError extends Error {
     this.name = "DataError";
   }
 }
-/** @param {number} status @returns {string} */
-function failureMessage(status) {
+/** @param {number} status @param {boolean} [management] @returns {string} */
+function failureMessage(status, management = false) {
+  if (status === 410)
+    return "This saved run was permanently deleted. Open History to choose another run.";
+  if (management && status === 409)
+    return "This run is still collecting. Wait for it to finish before changing its history.";
+  if (management && status === 503)
+    return "Saved storage is unavailable. Reload History to check the saved state before trying this action again.";
+  if (management && status === 400)
+    return "This history change was not accepted. Reload History before trying this action again.";
   if (status === 400)
     return "The request was not accepted. Check the inputs and try again.";
   if (status === 404)
@@ -322,13 +332,14 @@ function failureMessage(status) {
     return "Collection timed out. Check History for the saved outcome before collecting again.";
   return "The request could not finish. Check History and the local API before trying again.";
 }
-/** @param {string} path @param {AbortSignal} signal @param {unknown} [body] @returns {Promise<unknown>} */
-async function request(path, signal, body) {
+/** @param {string} path @param {AbortSignal} signal @param {unknown} [body] @param {'POST'|'PATCH'|'DELETE'} [method] @returns {Promise<unknown>} */
+async function request(path, signal, body, method) {
+  const management = method === "PATCH" || method === "DELETE";
   let response;
   try {
     response = await fetch(path, {
       signal,
-      method: body === undefined ? "GET" : "POST",
+      method: method ?? (body === undefined ? "GET" : "POST"),
       headers: {
         Accept: "application/json",
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -338,10 +349,13 @@ async function request(path, signal, body) {
   } catch (error) {
     if (signal.aborted) throw error;
     throw new DataError(
-      "Cannot reach the local API. Check History before collecting again.",
+      management
+        ? "Cannot reach the local API. Reload History to check whether the change was saved before trying this action again."
+        : "Cannot reach the local API. Check History before collecting again.",
     );
   }
-  if (!response.ok) throw new DataError(failureMessage(response.status));
+  if (!response.ok)
+    throw new DataError(failureMessage(response.status, management));
   try {
     return await response.json();
   } catch {
@@ -356,7 +370,7 @@ function readRun(value) {
     throw new DataError(
       "The API returned invalid saved data. Check the local API before trying again.",
     );
-  return value.run;
+  return { ...value.run, archivedAt: value.run.archivedAt ?? null };
 }
 /** @param {string} id @param {AbortSignal} signal @returns {Promise<Run>} */
 export async function fetchRun(id, signal) {
@@ -376,7 +390,7 @@ export async function fetchLatest(source, signal) {
   );
   if (isRecord(value) && value.run === null) return null;
   const run = readRun(value);
-  if (run.source !== source || run.status !== "succeeded")
+  if (run.source !== source || run.status !== "succeeded" || run.archivedAt)
     throw new DataError("The API returned inconsistent saved data.");
   return run;
 }
@@ -396,9 +410,15 @@ export async function createRun(source, inputs, requestId, signal) {
   publishCollectionRun(run, true);
   return run;
 }
-/** @param {Source|''} source @param {string|null} cursor @param {AbortSignal} signal @returns {Promise<{runs:RunSummary[],nextCursor:string|null}>} */
-export async function fetchHistory(source, cursor, signal) {
+/** @param {Source|''} source @param {string|null} cursor @param {AbortSignal} signal @param {'active'|'archived'} [visibility] @returns {Promise<{runs:RunSummary[],nextCursor:string|null}>} */
+export async function fetchHistory(
+  source,
+  cursor,
+  signal,
+  visibility = "active",
+) {
   const params = new URLSearchParams({ limit: "20" });
+  if (visibility === "archived") params.set("visibility", visibility);
   if (source) params.set("source", source);
   if (cursor) params.set("cursor", cursor);
   const value = await request("/api/runs?" + params, signal);
@@ -407,12 +427,60 @@ export async function fetchHistory(source, cursor, signal) {
     !Array.isArray(value.runs) ||
     !value.runs.every((run) => isRun(run, true)) ||
     !(value.nextCursor === null || text(value.nextCursor)) ||
-    value.runs.some((run) => source && run.source !== source)
+    value.runs.some(
+      (run) =>
+        (source && run.source !== source) ||
+        (visibility === "archived" ? !run.archivedAt : Boolean(run.archivedAt)),
+    )
   )
     throw new DataError(
       "The API returned invalid run history. Check the local API before trying again.",
     );
-  return { runs: value.runs, nextCursor: value.nextCursor };
+  return {
+    runs: value.runs.map((run) => ({
+      ...run,
+      archivedAt: run.archivedAt ?? null,
+    })),
+    nextCursor: value.nextCursor,
+  };
+}
+/** @param {string} id @param {boolean} archived @param {AbortSignal} signal @returns {Promise<Run>} */
+export async function archiveRun(id, archived, signal) {
+  const run = readRun(
+    await request(
+      "/api/runs/" + encodeURIComponent(id),
+      signal,
+      { archived },
+      "PATCH",
+    ),
+  );
+  if (
+    run.id !== id ||
+    run.status === "running" ||
+    Boolean(run.archivedAt) !== archived
+  )
+    throw new DataError(
+      "The API returned an unexpected history change. Reload History to check the saved state.",
+    );
+  return run;
+}
+/** @param {string} id @param {AbortSignal} signal @returns {Promise<void>} */
+export async function deleteRun(id, signal) {
+  const value = await request(
+    "/api/runs/" + encodeURIComponent(id),
+    signal,
+    { confirm: true },
+    "DELETE",
+  );
+  if (
+    !isRecord(value) ||
+    Object.keys(value).sort().join() !== "deleted,id" ||
+    value.id !== id ||
+    value.deleted !== true
+  )
+    throw new DataError(
+      "The API did not confirm deletion. Reload History to check the saved state before trying this action again.",
+    );
 }
 /** @param {AbortSignal} signal @returns {Promise<boolean>} */
 export async function fetchCollectionEnabled(signal) {
